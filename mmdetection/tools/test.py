@@ -14,6 +14,8 @@ from mmdet.apis import init_dist
 from mmdet.core import coco_eval, results2json, wrap_fp16_model
 from mmdet.datasets import build_dataloader, build_dataset
 from mmdet.models import build_detector
+import warnings
+warnings.filterwarnings("ignore")
 
 
 def single_gpu_test(model, data_loader, show=False):
@@ -132,9 +134,9 @@ def parse_args():
 def main():
     args = parse_args()
 
-    assert args.out or args.show or args.json_out, \
-        ('Please specify at least one operation (save or show the results) '
-         'with the argument "--out" or "--show" or "--json_out"')
+    # assert args.out or args.show or args.json_out, \
+    #     ('Please specify at least one operation (save or show the results) '
+    #      'with the argument "--out" or "--show" or "--json_out"')
 
     if args.out is not None and not args.out.endswith(('.pkl', '.pickle')):
         raise ValueError('The output file must be a pkl file.')
@@ -158,13 +160,16 @@ def main():
 
     # build the dataloader
     # TODO: support multiple images per gpu (only minor changes are needed)
-    dataset = build_dataset(cfg.data.test)
-    data_loader = build_dataloader(
-        dataset,
-        imgs_per_gpu=1,
-        workers_per_gpu=cfg.data.workers_per_gpu,
-        dist=distributed,
-        shuffle=False)
+    dataset = [build_dataset(cfg.data.test)]
+    if cfg.data.test.with_reid:
+        dataset.append(build_dataset(cfg.data.query))
+    data_loader = [build_dataloader(
+            ds,
+            imgs_per_gpu=1,
+            workers_per_gpu=cfg.data.workers_per_gpu,
+            dist=distributed,
+            shuffle=False)
+        for ds in dataset]
 
     # build the model and load checkpoint
     model = build_detector(cfg.model, train_cfg=None, test_cfg=cfg.test_cfg)
@@ -181,43 +186,49 @@ def main():
 
     if not distributed:
         model = MMDataParallel(model, device_ids=[0])
-        outputs = single_gpu_test(model, data_loader, args.show)
+        outputs = [single_gpu_test(model, dl, args.show) for dl in data_loader]
     else:
         model = MMDistributedDataParallel(model.cuda())
-        outputs = multi_gpu_test(model, data_loader, args.tmpdir)
+        outputs = [multi_gpu_test(model, dl, args.tmpdir) for dl in data_loader]
 
     rank, _ = get_dist_info()
-    if args.out and rank == 0:
-        print('\nwriting results to {}'.format(args.out))
-        mmcv.dump(outputs, args.out)
-        eval_types = args.eval
-        if eval_types:
-            print('Starting evaluate {}'.format(' and '.join(eval_types)))
-            if eval_types == ['proposal_fast']:
-                result_file = args.out
-                coco_eval(result_file, eval_types, dataset.coco)
-            else:
-                if not isinstance(outputs[0], dict):
-                    result_files = results2json(dataset, outputs, args.out)
-                    coco_eval(result_files, eval_types, dataset.coco)
-                else:
-                    for name in outputs[0]:
-                        print('\nEvaluating {}'.format(name))
-                        outputs_ = [out[name] for out in outputs]
-                        result_file = args.out + '.{}'.format(name)
-                        result_files = results2json(dataset, outputs_,
-                                                    result_file)
-                        coco_eval(result_files, eval_types, dataset.coco)
-
-    # Save predictions in the COCO json format
-    if args.json_out and rank == 0:
-        if not isinstance(outputs[0], dict):
-            results2json(dataset, outputs, args.json_out)
-        else:
-            for name in outputs[0]:
-                outputs_ = [out[name] for out in outputs]
-                result_file = args.json_out + '.{}'.format(name)
-                results2json(dataset, outputs_, result_file)
+    if rank == 0:
+        print('Starting evaluate {}'.format(args.checkpoint))
+        result = dataset[0].evaluate(outputs, dataset)
+        with open(os.path.join(cfg.work_dir, "eva_result.txt"), "a") as fid:
+            fid.write(args.checkpoint+'\n')
+            fid.write(result+'\n')
+    # if args.out and rank == 0:
+    #     print('\nwriting results to {}'.format(args.out))
+    #     mmcv.dump(outputs, args.out)
+    #     eval_types = args.eval
+    #     if eval_types:
+    #         print('Starting evaluate {}'.format(' and '.join(eval_types)))
+    #         if eval_types == ['proposal_fast']:
+    #             result_file = args.out
+    #             coco_eval(result_file, eval_types, dataset.coco)
+    #         else:
+    #             if not isinstance(outputs[0], dict):
+    #                 result_files = results2json(dataset, outputs, args.out)
+    #                 coco_eval(result_files, eval_types, dataset.coco)
+    #             else:
+    #                 for name in outputs[0]:
+    #                     print('\nEvaluating {}'.format(name))
+    #                     outputs_ = [out[name] for out in outputs]
+    #                     result_file = args.out + '.{}'.format(name)
+    #                     result_files = results2json(dataset, outputs_,
+    #                                                 result_file)
+    #                     coco_eval(result_files, eval_types, dataset.coco)
+    #
+    # # Save predictions in the COCO json format
+    # if args.json_out and rank == 0:
+    #     if not isinstance(outputs[0], dict):
+    #         results2json(dataset, outputs, args.json_out)
+    #     else:
+    #         for name in outputs[0]:
+    #             outputs_ = [out[name] for out in outputs]
+    #             result_file = args.json_out + '.{}'.format(name)
+    #             results2json(dataset, outputs_, result_file)
 
 
 if __name__ == '__main__':

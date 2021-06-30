@@ -17,11 +17,12 @@ class RepPointsDetector(SingleStageDetector):
                  backbone,
                  neck,
                  bbox_head,
+                 bbox_roi_extractor,
                  train_cfg=None,
                  test_cfg=None,
                  pretrained=None):
         super(RepPointsDetector,
-              self).__init__(backbone, neck, bbox_head, train_cfg, test_cfg,
+              self).__init__(backbone, neck, bbox_head, bbox_roi_extractor, train_cfg, test_cfg,
                              pretrained)
 
     def merge_aug_results(self, aug_bboxes, aug_scores, img_metas):

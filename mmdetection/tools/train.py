@@ -10,6 +10,8 @@ from mmdet.apis import (get_root_logger, init_dist, set_random_seed,
                         train_detector)
 from mmdet.datasets import build_dataset
 from mmdet.models import build_detector
+import warnings
+warnings.filterwarnings("ignore")
 
 
 def parse_args():
@@ -22,6 +24,14 @@ def parse_args():
         '--validate',
         action='store_true',
         help='whether to evaluate the checkpoint during training')
+    parser.add_argument(
+        '--eval',
+        action='store_true',
+        help='whether to evaluate the checkpoint after training')
+    parser.add_argument(
+        '--moco',
+        action='store_true',
+        help='whether to use momentum encoder')
     parser.add_argument(
         '--gpus',
         type=int,
@@ -101,7 +111,51 @@ def main():
         cfg,
         distributed=distributed,
         validate=args.validate,
-        logger=logger)
+        logger=logger,
+        use_moco=args.moco)
+
+    if args.eval:
+        print('\nDoing evaluation')
+        from mmdet.datasets import build_dataloader
+        from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
+        from mmcv.runner import get_dist_info, load_checkpoint
+        from tools.test import single_gpu_test, multi_gpu_test
+
+        cfg.model.pretrained = None
+        cfg.data.test.test_mode = True
+        # build the dataloader
+        samples_per_gpu = cfg.data.test.pop('samples_per_gpu', 1)
+        dataset = [build_dataset(cfg.data.test)]
+        if cfg.data.test.with_reid:
+            dataset.append(build_dataset(cfg.data.query))
+        data_loader = [
+            build_dataloader(
+                ds,
+                imgs_per_gpu=1,
+                workers_per_gpu=cfg.data.workers_per_gpu,
+                dist=distributed,
+                shuffle=False)
+            for ds in dataset]
+
+        for i in range(cfg.total_epochs, cfg.total_epochs-1, -1):
+            model = build_detector(cfg.model, train_cfg=None, test_cfg=cfg.test_cfg)
+            ckpt = os.path.join(cfg.work_dir, 'epoch_' + str(i) + '.pth')
+            load_checkpoint(model, ckpt, map_location='cpu')
+
+            if not distributed:
+                model = MMDataParallel(model, device_ids=[0])
+                outputs = [single_gpu_test(model, dl) for dl in data_loader]
+            else:
+                model = MMDistributedDataParallel(model.cuda())
+                outputs = [multi_gpu_test(model, dl) for dl in data_loader]
+
+            rank, _ = get_dist_info()
+            if rank == 0:
+                print('\nStarting evaluate {}'.format(ckpt))
+                result = dataset[0].evaluate(outputs, dataset)
+                with open(os.path.join(cfg.work_dir, "eva_result.txt"), "a") as fid:
+                    fid.write(ckpt + '\n')
+                    fid.write(result+'\n')
 
 
 if __name__ == '__main__':

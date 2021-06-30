@@ -5,14 +5,64 @@ from collections import OrderedDict
 import torch
 from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
 from mmcv.runner import DistSamplerSeedHook, Runner, obj_from_dict
-
 from mmdet import datasets
 from mmdet.core import (CocoDistEvalmAPHook, CocoDistEvalRecallHook,
                         DistEvalmAPHook, DistOptimizerHook, Fp16OptimizerHook)
 from mmdet.datasets import DATASETS, build_dataloader
 from mmdet.models import RPN
 from .env import get_root_logger
+import copy
 
+
+class MyRunner(Runner):
+    def __init__(self,
+                 model,
+                 batch_processor,
+                 optimizer,
+                 work_dir,
+                 log_level,
+                 use_moco=False,
+                 with_reid=False):
+        super(MyRunner, self).__init__(model, batch_processor, optimizer, work_dir, log_level)
+        self.with_reid=with_reid
+        self.use_moco = use_moco
+        if self.use_moco:
+            self.momentum_encoder = copy.deepcopy(self.model)
+            for param in self.momentum_encoder.parameters():
+                param.requires_grad_(False)
+        else:
+            self.momentum_encoder = None
+
+    def train(self, data_loader, **kwargs):
+        self.model.train()
+        if self.use_moco:
+            self.momentum_encoder.train()
+        self.mode = 'train'
+        self.data_loader = data_loader
+        self._max_iters = self._max_epochs * len(data_loader)
+        self.call_hook('before_train_epoch')
+        for i, data_batch in enumerate(data_loader):
+            self._inner_iter = i
+            self.call_hook('before_train_iter')
+
+            if self.use_moco:
+                with torch.no_grad():
+                    for k_param, q_param in zip(self.momentum_encoder.parameters(), self.model.parameters()):
+                        torch.lerp(k_param.data, q_param.data, weight=1 - 0.999, out=k_param.data)
+
+            outputs = self.batch_processor(
+                self.model, data_batch, momentum_encoder=self.momentum_encoder, with_reid=self.with_reid, train_mode=True, **kwargs)
+            if not isinstance(outputs, dict):
+                raise TypeError('batch_processor() must return a dict')
+            if 'log_vars' in outputs:
+                self.log_buffer.update(outputs['log_vars'],
+                                       outputs['num_samples'])
+            self.outputs = outputs
+            self.call_hook('after_train_iter')
+            self._iter += 1
+
+        self.call_hook('after_train_epoch')
+        self._epoch += 1
 
 def parse_losses(losses):
     log_vars = OrderedDict()
@@ -34,13 +84,24 @@ def parse_losses(losses):
     return loss, log_vars
 
 
-def batch_processor(model, data, train_mode):
-    losses = model(**data)
+def batch_processor(model, data, momentum_encoder, with_reid, train_mode):
+    if momentum_encoder is not None:
+        data_k = data.copy()
+        data_k['img_meta'] = 'use_moco'
+        feats_k = momentum_encoder(**data_k)
+    else:
+        feats_k = None
+
+    if with_reid:  # person search
+        losses, feats = model(**data)
+        loss_reid = model.module.reid_head.loss_evaluator(feats, data['gt_labels']._data[0], feats_k)
+        losses.update({"loss_reid": [loss_reid], })
+    else:  # detection
+        losses = model(**data)
     loss, log_vars = parse_losses(losses)
 
     outputs = dict(
         loss=loss, log_vars=log_vars, num_samples=len(data['img'].data))
-
     return outputs
 
 
@@ -49,15 +110,16 @@ def train_detector(model,
                    cfg,
                    distributed=False,
                    validate=False,
-                   logger=None):
+                   logger=None,
+                   use_moco=None):
     if logger is None:
         logger = get_root_logger(cfg.log_level)
 
     # start training
     if distributed:
-        _dist_train(model, dataset, cfg, validate=validate)
+        _dist_train(model, dataset, cfg, validate=validate, use_moco=use_moco)
     else:
-        _non_dist_train(model, dataset, cfg, validate=validate)
+        _non_dist_train(model, dataset, cfg, validate=validate, use_moco=use_moco)
 
 
 def build_optimizer(model, optimizer_cfg):
@@ -134,7 +196,7 @@ def build_optimizer(model, optimizer_cfg):
         return optimizer_cls(params, **optimizer_cfg)
 
 
-def _dist_train(model, dataset, cfg, validate=False):
+def _dist_train(model, dataset, cfg, validate=False, use_moco=False):
     # prepare data loaders
     dataset = dataset if isinstance(dataset, (list, tuple)) else [dataset]
     data_loaders = [
@@ -186,7 +248,7 @@ def _dist_train(model, dataset, cfg, validate=False):
     runner.run(data_loaders, cfg.workflow, cfg.total_epochs)
 
 
-def _non_dist_train(model, dataset, cfg, validate=False):
+def _non_dist_train(model, dataset, cfg, validate=False, use_moco=False):
     # prepare data loaders
     dataset = dataset if isinstance(dataset, (list, tuple)) else [dataset]
     data_loaders = [
@@ -199,11 +261,10 @@ def _non_dist_train(model, dataset, cfg, validate=False):
     ]
     # put model on gpus
     model = MMDataParallel(model, device_ids=range(cfg.gpus)).cuda()
-
     # build runner
     optimizer = build_optimizer(model, cfg.optimizer)
-    runner = Runner(model, batch_processor, optimizer, cfg.work_dir,
-                    cfg.log_level)
+    runner = MyRunner(model, batch_processor, optimizer, cfg.work_dir,
+                    cfg.log_level, use_moco=use_moco, with_reid=cfg.data.train.with_reid)
     # fp16 setting
     fp16_cfg = cfg.get('fp16', None)
     if fp16_cfg is not None:
