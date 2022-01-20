@@ -71,6 +71,7 @@ class OIM(Function):
                 continue
         return grad_inputs, None, None, None, None, None
 
+
 class OIMLossComputation(nn.Module):
     def __init__(self, cfg):
         super(OIMLossComputation, self).__init__()
@@ -146,7 +147,6 @@ class CIRCLELossComputation(nn.Module):
             feat_queue = feat_unlabeled_k if features_k is not None else feat_unlabeled
             self.queue, self.pointer[1] = update_queue(self.queue, self.pointer[1], feat_queue)
 
-
         lut_sim = torch.mm(feat_labeled, self.lut.t())
         positive_mask = id_labeled.view(-1, 1) == self.id_inx.view(1, -1)
         sim_ap = lut_sim.masked_fill(~positive_mask, float("inf"))
@@ -160,6 +160,8 @@ class CIRCLELossComputation(nn.Module):
 
 
 def make_reid_loss_evaluator(cfg):
-    # loss_evaluator = OIMLossComputation(cfg)
-    loss_evaluator = CIRCLELossComputation(cfg)
+    if cfg.use_mr:
+        loss_evaluator = CIRCLELossComputation(cfg)
+    else:
+        loss_evaluator = OIMLossComputation(cfg)
     return loss_evaluator

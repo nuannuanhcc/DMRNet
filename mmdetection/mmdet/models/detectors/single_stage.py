@@ -55,7 +55,7 @@ class SingleStageDetector(BaseDetector):
                       gt_labels,
                       gt_bboxes_ignore=None):
 
-        if img_metas == 'use_moco':
+        if img_metas == 'use_mr':
             x = self.extract_feat(img)
             bbox_feats = self.bbox_roi_extractor(
                 x[:self.bbox_roi_extractor.num_inputs], bbox2roi(gt_bboxes))

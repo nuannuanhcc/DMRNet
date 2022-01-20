@@ -29,10 +29,6 @@ def parse_args():
         action='store_true',
         help='whether to evaluate the checkpoint after training')
     parser.add_argument(
-        '--moco',
-        action='store_true',
-        help='whether to use momentum encoder')
-    parser.add_argument(
         '--gpus',
         type=int,
         default=1,
@@ -112,7 +108,7 @@ def main():
         distributed=distributed,
         validate=args.validate,
         logger=logger,
-        use_moco=args.moco)
+        use_mr=cfg.use_mr)
 
     if args.eval:
         print('\nDoing evaluation')
