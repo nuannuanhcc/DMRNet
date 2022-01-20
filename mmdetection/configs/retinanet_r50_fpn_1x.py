@@ -73,7 +73,8 @@ test_cfg = dict(
     score_thr=0.05,
     nms=dict(type='nms', iou_thr=0.5),
     max_per_img=100,
-    with_reid=with_reid)
+    with_reid=with_reid,
+    use_mr=use_mr)
 # dataset settings
 
 img_norm_cfg = dict(
