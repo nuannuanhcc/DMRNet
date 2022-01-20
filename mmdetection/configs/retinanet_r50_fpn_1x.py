@@ -1,7 +1,7 @@
 # base settings
 with_reid = True
 use_mr = True
-img_size = (1333, 800)  # (1333, 800), (1500, 900)
+img_size = (1500, 900) # (1333, 800), (1500, 900)
 work_dir = './work_dirs/retina'
 num_images = 3
 
