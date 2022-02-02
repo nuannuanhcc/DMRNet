@@ -105,6 +105,7 @@ def collect_results(result_part, size, tmpdir=None):
 def parse_args():
     parser = argparse.ArgumentParser(description='MMDet test detector')
     parser.add_argument('config', help='test config file path')
+    parser.add_argument('--work_dir', help='the dir to save logs and models')
     parser.add_argument('checkpoint', help='checkpoint file')
     parser.add_argument('--out', help='output result file')
     parser.add_argument(
@@ -150,7 +151,8 @@ def main():
         torch.backends.cudnn.benchmark = True
     cfg.model.pretrained = None
     cfg.data.test.test_mode = True
-
+    if args.work_dir is not None:
+        cfg.work_dir = args.work_dir
     # init distributed env first, since logger depends on the dist info.
     if args.launcher == 'none':
         distributed = False
