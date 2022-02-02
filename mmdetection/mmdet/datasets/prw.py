@@ -18,10 +18,7 @@ class PrwDataset(CocoDataset):
     def load_annotations(self, ann_file):
         self.coco = COCO(ann_file)
         self.cat_ids = self.coco.getCatIds()
-        self.cat2label = {
-            cat_id: i + 1
-            for i, cat_id in enumerate(self.cat_ids)
-        }
+        self.cat2label = {cat_id: i+1 for i, cat_id in enumerate(self.cat_ids)}
         self.img_ids = self.coco.getImgIds()
         img_infos = []
         for i in self.img_ids:
@@ -50,17 +47,12 @@ class PrwDataset(CocoDataset):
 
     def evaluate(self, predictions, dataset):
         if self.with_reid:
-            result = self.evaluate_reid(predictions, dataset)
+            result = self.evaluate_search(predictions, dataset)
         else:
             result = self.evaluate_detection(predictions)
+        return result
 
-        result_str = "\n##########################################\n"
-        for k, v in result.items():
-            result_str += '{} = {} \n'.format(k, v)
-        result_str += "###########################################\n"
-        return result_str
-
-    def evaluate_reid(self, predictions, dataset, gallery_size=-1, iou_thr=0.5):
+    def evaluate_search(self, predictions, dataset, gallery_size=-1, iou_thresh=0.5):
         # detection
         pred_boxlists = []
         gt_boxlists = []
@@ -70,14 +62,28 @@ class PrwDataset(CocoDataset):
             pred_boxlists.append(prediction[0][0][0])
             gt_boxlist = dataset[0].get_ann_info(image_id)['bboxes']
             gt_boxlists.append(gt_boxlist)
-        det_result = self.eval_detection_sysu(pred_boxlists=pred_boxlists, gt_boxlists=gt_boxlists,
-                                              iou_thresh=iou_thr, use_07_metric=False)
-        # person search
-        reid_result, save_result = self.search_performance_calc(predictions, dataset, gallery_size)
-        reid_result.update(det_result)
-        return reid_result
 
-    def evaluate_detection(self, predictions, iou_thr=0.5):
+        # person search
+        result = self.eval_search(predictions, dataset, gallery_size)
+        det_result = self.eval_det(
+            pred_boxlists=pred_boxlists,
+            gt_boxlists=gt_boxlists,
+            iou_thresh=iou_thresh)
+
+        topk = [1, 3, 5, 10]
+        result_str = "\n##################################################\n"
+        result_str += "#############   gallery_size = {}   #############\n".format(gallery_size)
+        result_str += "Detection_Recall: {:.2%}\n".format(np.nanmean(det_result["rec"][1]))
+        result_str += "Detection_Precision: {:.2%}\n".format(np.nanmean(det_result["prec"][1]))
+        result_str += "Detection_mean_Avg_Precision: {:.2%}\n".format(det_result["map"])
+        result_str += "ReID_mean_Avg_Precision: {:.2%}\n".format(result["ReID_mean_Avg_Precision"])
+        for i, k in enumerate(topk):
+            result_str += "Top-{:2d} = {:.2%} \n".format(k, result["CMC"][i])
+        result_str += "##################################################\n"
+        print(result_str)
+        return result_str
+
+    def evaluate_detection(self, predictions, iou_thresh=0.5):
         pred_boxlists = []
         gt_boxlists = []
         for image_id, prediction in enumerate(predictions[0]):
@@ -88,11 +94,20 @@ class PrwDataset(CocoDataset):
             pred_boxlists.append(prediction)
             gt_boxlists.append(gt_boxlist)
 
-        result = self.eval_detection_sysu(pred_boxlists=pred_boxlists, gt_boxlists=gt_boxlists,
-                                          iou_thresh=iou_thr, use_07_metric=False)
-        return result
+        result = self.eval_det(
+            pred_boxlists=pred_boxlists,
+            gt_boxlists=gt_boxlists,
+            iou_thresh=iou_thresh)
 
-    def eval_detection_sysu(self, pred_boxlists, gt_boxlists, iou_thresh=0.5, use_07_metric=False):
+        result_str = "\n##################################################\n"
+        result_str += "Detection_Recall: {:.2%}\n".format(np.nanmean(result["rec"][1]))
+        result_str += "Detection_Precision: {:.2%}\n".format(np.nanmean(result["prec"][1]))
+        result_str += "Detection_mean_Avg_Precision: {:.2%}\n".format(result["map"])
+        result_str += "##################################################\n"
+        print(result_str)
+        return result_str
+
+    def eval_det(self, pred_boxlists, gt_boxlists, iou_thresh=0.5, use_07_metric=False):
         """Evaluate on voc dataset.
         Args:
             pred_boxlists(list[BoxList]): pred boxlist, has labels and scores fields.
@@ -102,21 +117,13 @@ class PrwDataset(CocoDataset):
         Returns:
             dict represents the results
         """
-        assert len(gt_boxlists) == len(
-            pred_boxlists
-        ), "Length of gt and pred lists need to be same."
-        prec, rec = self.calc_detection_sysu_prec_rec(
-            pred_boxlists=pred_boxlists, gt_boxlists=gt_boxlists, iou_thresh=iou_thresh
-        )
-        ap = self.calc_detection_sysu_ap(prec, rec, use_07_metric=use_07_metric)
-        result = {}
-        result.update({'Detection_Precision': np.round(100 * np.nanmean(prec[1]), 2)})
-        result.update({'Detection_Recall': np.round(100 * np.nanmean(rec[1]), 2)})
-        result.update({'Detection_mean_Avg_Precision': np.round(100 * np.nanmean(ap), 2)})
-        print(result)
-        return result
+        assert len(gt_boxlists) == len(pred_boxlists), "Length of gt and pred lists need to be same."
+        prec, rec = self.calc_detection_prec_rec(pred_boxlists=pred_boxlists,
+                                                 gt_boxlists=gt_boxlists, iou_thresh=iou_thresh)
+        ap = self.calc_detection_ap(prec, rec, use_07_metric=use_07_metric)
+        return {"prec": prec, "rec": rec, "map": np.nanmean(ap)}
 
-    def search_performance_calc(self, predictions, dataset, gallery_size=-1, det_thresh=0.5, ignore_cam_id=True):
+    def eval_search(self, predictions, dataset, gallery_size=-1, det_thresh=0.5, ignore_cam_id=True):
 
         """
         gallery_det (list of ndarray): n_det x [x1, x2, y1, y2, score] per image
@@ -162,7 +169,7 @@ class PrwDataset(CocoDataset):
 
         aps = []
         accs = []
-        topk = [1, 5, 10]
+        topk = [1, 3, 5, 10]
         ret = {}
         save_results = []
         for i in tqdm(range(len(dataset_query))):
@@ -248,33 +255,16 @@ class PrwDataset(CocoDataset):
             y_score = y_score[inds]
             y_true = y_true[inds]
             accs.append([min(1, sum(y_true[:k])) for k in topk])
-            # 4. Save result for JSON dump
-            new_entry = {'probe_img': str(probe_imname),
-                         'probe_roi': map(float, list(probe_roi.squeeze())),
-                         'probe_gt': probe_gts,
-                         'gallery': []}
-            # only save top-10 predictions
-            for k in range(10):
-                new_entry['gallery'].append({
-                    'img': str(imgs[inds[k]]),
-                    'roi': map(float, list(rois[inds[k]])),
-                    'score': float(y_score[k]),
-                    'correct': int(y_true[k]),
-                })
-            save_results.append(new_entry)
 
-        print('search ranking:')
-        mAP = np.mean(aps)
-        print('  mAP = {:.2%}'.format(mAP))
-        ret['Person_Search_mAP'] = np.round(100 * np.mean(aps), 2)
-
+        ReID_mean_Avg_Precision = np.nanmean(aps)
         accs = np.mean(accs, axis=0)
-        for i, k in enumerate(topk):
-            print('  top-{:2d} = {:.2%}'.format(k, accs[i]))
-            ret['Person_Search_Rank-'+str(k)] = np.round(100 * accs[i], 2)
-        return ret, save_results
 
-    def calc_detection_sysu_prec_rec(self, gt_boxlists, pred_boxlists, iou_thresh=0.5):
+        result = {}
+        result.update({'ReID_mean_Avg_Precision': ReID_mean_Avg_Precision})
+        result.update({'CMC': accs})
+        return result
+
+    def calc_detection_prec_rec(self, gt_boxlists, pred_boxlists, iou_thresh=0.5):
         """Calculate precision and recall based on evaluation code of PASCAL VOC.
         This function calculates precision and recall of
         predicted bounding boxes obtained from a dataset which has :math:`N`
@@ -362,7 +352,7 @@ class PrwDataset(CocoDataset):
 
         return prec, rec
 
-    def calc_detection_sysu_ap(self, prec, rec, use_07_metric=False):
+    def calc_detection_ap(self, prec, rec, use_07_metric=False):
         """Calculate average precisions based on evaluation code of PASCAL VOC.
         This function calculates average precisions
         from given precisions and recalls.
@@ -408,7 +398,6 @@ class PrwDataset(CocoDataset):
                 # first append sentinel values at the end
                 mpre = np.concatenate(([0], np.nan_to_num(prec[l]), [0]))
                 mrec = np.concatenate(([0], rec[l], [1]))
-
                 mpre = np.maximum.accumulate(mpre[::-1])[::-1]
 
                 # to calculate area under PR curve, look for points
@@ -428,4 +417,5 @@ class PrwDataset(CocoDataset):
         inter = max(0, x2 - x1) * max(0, y2 - y1)
         union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
         return inter * 1.0 / union
+
 

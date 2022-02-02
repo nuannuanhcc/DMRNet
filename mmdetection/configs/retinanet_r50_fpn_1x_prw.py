@@ -2,19 +2,19 @@
 with_reid = True
 use_mr = True
 img_size = (1500, 900)  # (1333, 800), (1500, 900)
-work_dir = './work_dirs/dmrnet'
+work_dir = './work_dirs/retina'
 num_images = 3
 
-dataset_type = 'SysuDataset'
-data_root = 'data/sysu/'
-# dataset_type = 'PrwDataset'
-# data_root = 'data/prw/'
+# dataset_type = 'SysuDataset'
+# data_root = 'data/sysu/'
+dataset_type = 'PrwDataset'
+data_root = 'data/prw/'
 
 # model settings
 norm_cfg = dict(type='GN', num_groups=32, requires_grad=True)
 model = dict(
-    type='RepPointsDetector',
-    pretrained='modelzoo://resnet50',
+    type='RetinaNet',
+    pretrained='torchvision://resnet50',
     backbone=dict(
         type='ResNet',
         depth=50,
@@ -31,48 +31,40 @@ model = dict(
         num_outs=5,
         norm_cfg=norm_cfg),
     bbox_head=dict(
-        type='RepPointsHead',
+        type='RetinaHead',
         num_classes=2,
         in_channels=256,
+        stacked_convs=4,
         feat_channels=256,
-        point_feat_channels=256,
-        stacked_convs=3,
-        num_points=9,
-        gradient_mul=0.1,
-        point_strides=[8, 16, 32, 64, 128],
-        point_base_scale=4,
-        norm_cfg=norm_cfg,
+        octave_base_scale=4,
+        scales_per_octave=3,
+        anchor_ratios=[0.5, 1.0, 2.0],
+        anchor_strides=[8, 16, 32, 64, 128],
+        target_means=[.0, .0, .0, .0],
+        target_stds=[1.0, 1.0, 1.0, 1.0],
         loss_cls=dict(
             type='FocalLoss',
             use_sigmoid=True,
             gamma=2.0,
             alpha=0.25,
             loss_weight=1.0),
-        loss_bbox_init=dict(type='SmoothL1Loss', beta=0.11, loss_weight=0.5),
-        loss_bbox_refine=dict(type='SmoothL1Loss', beta=0.11, loss_weight=1.0),
-        transform_method='moment'),
+        loss_bbox=dict(type='SmoothL1Loss', beta=0.11, loss_weight=1.0)),
     bbox_roi_extractor=dict(
         type='SingleRoIExtractor',
-        roi_layer=dict(type='RoIAlign', out_size=(7, 7), sample_num=2),
+        roi_layer=dict(type='RoIAlign', out_size=7, sample_num=2),
         out_channels=256,
         featmap_strides=[8, 16, 32, 64]))
 # training and testing settings
 train_cfg = dict(
-    init=dict(
-        assigner=dict(type='PointAssigner', scale=4, pos_num=1),
-        allowed_border=-1,
-        pos_weight=-1,
-        debug=False),
-    refine=dict(
-        assigner=dict(
-            type='MaxIoUAssigner',
-            pos_iou_thr=0.5,
-            neg_iou_thr=0.4,
-            min_pos_iou=0,
-            ignore_iof_thr=-1),
-        allowed_border=-1,
-        pos_weight=-1,
-        debug=False),
+    assigner=dict(
+        type='MaxIoUAssigner',
+        pos_iou_thr=0.5,
+        neg_iou_thr=0.4,
+        min_pos_iou=0,
+        ignore_iof_thr=-1),
+    allowed_border=-1,
+    pos_weight=-1,
+    debug=False,
     with_reid=with_reid)
 test_cfg = dict(
     dataset_type=dataset_type,
@@ -84,12 +76,12 @@ test_cfg = dict(
     with_reid=with_reid,
     use_mr=use_mr)
 # dataset settings
+
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
-
 data = dict(
-    imgs_per_gpu=num_images,
-    workers_per_gpu=num_images,
+    imgs_per_gpu=3,
+    workers_per_gpu=3,
     train=dict(
         type=dataset_type,
         ann_file=data_root + 'annotations/train.json',
@@ -154,7 +146,7 @@ lr_config = dict(
 checkpoint_config = dict(interval=1)
 # yapf:disable
 log_config = dict(
-    interval=100,
+    interval=50,
     hooks=[
         dict(type='TextLoggerHook'),
         # dict(type='TensorboardLoggerHook')
@@ -167,5 +159,4 @@ dist_params = dict(backend='nccl')
 log_level = 'INFO'
 load_from = None
 resume_from = None
-auto_resume = True
 workflow = [('train', 1)]
