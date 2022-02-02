@@ -69,7 +69,7 @@ class SingleRoIExtractor(nn.Module):
         scale = torch.sqrt(
             (rois[:, 3] - rois[:, 1] + 1) * (rois[:, 4] - rois[:, 2] + 1))
         target_lvls = torch.floor(torch.log2(scale / self.finest_scale + 1e-6))
-        target_lvls = target_lvls.clamp(min=0, max=num_levels - 3).long()
+        target_lvls = target_lvls.clamp(min=0, max=num_levels - 2).long()
         return target_lvls
 
     def roi_rescale(self, rois, scale_factor):
